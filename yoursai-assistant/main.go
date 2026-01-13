@@ -148,16 +148,17 @@ func saveChat(ctx context.Context, userId, sessionId, userMsg, aiMsg string) err
 	}
 
 	// Clean up old chats to maintain limit
-	cleanupOldChats(ctx, sessionId, db)
+	cleanupOldChats(ctx, userId, sessionId, db)
 	return nil
 }
 
-func cleanupOldChats(ctx context.Context, sessionId string, db *dynamodb.Client) {
-	// Get all chats for this session, ordered by timestamp
+func cleanupOldChats(ctx context.Context, userId, sessionId string, db *dynamodb.Client) {
+	// Get all chats for this user and session, ordered by timestamp
 	out, err := db.Query(ctx, &dynamodb.QueryInput{
 		TableName:              aws.String("ChatHistory"),
-		KeyConditionExpression: aws.String("sessionId = :sid"),
+		KeyConditionExpression: aws.String("user_id = :uid AND session_id = :sid"),
 		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":uid": &types.AttributeValueMemberS{Value: userId},
 			":sid": &types.AttributeValueMemberS{Value: sessionId},
 		},
 		ScanIndexForward: aws.Bool(false), // newest first
@@ -173,8 +174,8 @@ func cleanupOldChats(ctx context.Context, sessionId string, db *dynamodb.Client)
 			db.DeleteItem(ctx, &dynamodb.DeleteItemInput{
 				TableName: aws.String("ChatHistory"),
 				Key: map[string]types.AttributeValue{
-					"sessionId": item["sessionId"],
-					"timestamp": item["timestamp"],
+					"user_id":    item["user_id"],
+					"session_id": item["session_id"],
 				},
 			})
 		}
