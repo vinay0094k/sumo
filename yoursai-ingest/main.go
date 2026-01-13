@@ -29,29 +29,29 @@ func extractUserFromToken(authHeader string) (string, error) {
 	if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
 		return "", fmt.Errorf("missing or invalid authorization header")
 	}
-	
+
 	token := strings.TrimPrefix(authHeader, "Bearer ")
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
 		return "", fmt.Errorf("invalid JWT format")
 	}
-	
+
 	// Decode payload (second part)
 	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
 		return "", fmt.Errorf("failed to decode JWT payload")
 	}
-	
+
 	var claims map[string]interface{}
 	if err := json.Unmarshal(payload, &claims); err != nil {
 		return "", fmt.Errorf("failed to parse JWT claims")
 	}
-	
+
 	// Extract user ID from 'sub' claim
 	if sub, ok := claims["sub"].(string); ok {
 		return sub, nil
 	}
-	
+
 	return "", fmt.Errorf("user ID not found in token")
 }
 
@@ -79,22 +79,22 @@ func connectDB(ctx context.Context) (*sql.DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to get host: %v", err)
 	}
-	
+
 	username, err := getParameter(ctx, DBUsernamePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get username: %v", err)
 	}
-	
+
 	password, err := getParameter(ctx, DBPasswordPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get password: %v", err)
 	}
-	
+
 	database, err := getParameter(ctx, DBDatabasePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get database: %v", err)
 	}
-	
+
 	port, err := getParameter(ctx, DBPortPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get port: %v", err)
@@ -107,18 +107,18 @@ func connectDB(ctx context.Context) (*sql.DB, error) {
 
 	connStr := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=require",
 		host, port, username, password, database)
-	
+
 	log.Printf("Connecting to database with host=%s port=%s dbname=%s", host, port, database)
-	
+
 	db, err := sql.Open("postgres", connStr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open connection: %v", err)
 	}
-	
+
 	if err = db.Ping(); err != nil {
 		return nil, fmt.Errorf("failed to ping database: %v", err)
 	}
-	
+
 	return db, nil
 }
 
@@ -126,7 +126,7 @@ func connectDB(ctx context.Context) (*sql.DB, error) {
 func chunkText(text string, maxTokens int) []string {
 	words := strings.Fields(text)
 	wordsPerChunk := maxTokens * 3 / 4 // Rough conversion: 1 token ≈ 0.75 words
-	
+
 	var chunks []string
 	for i := 0; i < len(words); i += wordsPerChunk {
 		end := i + wordsPerChunk
@@ -136,7 +136,7 @@ func chunkText(text string, maxTokens int) []string {
 		chunk := strings.Join(words[i:end], " ")
 		chunks = append(chunks, chunk)
 	}
-	
+
 	return chunks
 }
 
@@ -151,7 +151,7 @@ func generateEmbedding(ctx context.Context, text string, apiKey string) ([]float
 	}
 
 	body, _ := json.Marshal(payload)
-	req, _ := http.NewRequest("POST", EmbeddingAPIURL+"?key="+apiKey, bytes.NewBuffer(body))
+	req, _ := http.NewRequestWithContext(ctx, "POST", EmbeddingAPIURL+"?key="+apiKey, bytes.NewBuffer(body))
 	req.Header.Set("Content-Type", "application/json")
 
 	client := &http.Client{Timeout: HTTPTimeout * time.Second}
@@ -166,12 +166,25 @@ func generateEmbedding(ctx context.Context, text string, apiKey string) ([]float
 		return nil, err
 	}
 
-	embedding := result["embedding"].(map[string]interface{})["values"].([]interface{})
-	embedVec := make([]float64, len(embedding))
-	for i, v := range embedding {
-		embedVec[i] = v.(float64)
+	embeddingMap, embOk := result["embedding"].(map[string]interface{})
+	if !embOk {
+		return nil, fmt.Errorf("invalid embedding response format")
 	}
-	
+
+	values, valOk := embeddingMap["values"].([]interface{})
+	if !valOk {
+		return nil, fmt.Errorf("invalid embedding values format")
+	}
+
+	embedVec := make([]float64, len(values))
+	for i, v := range values {
+		if floatVal, ok := v.(float64); ok {
+			embedVec[i] = floatVal
+		} else {
+			return nil, fmt.Errorf("invalid embedding value type at index %d", i)
+		}
+	}
+
 	return embedVec, nil
 }
 
@@ -181,7 +194,7 @@ func handler(ctx context.Context, request events.APIGatewayProxyRequest) (events
 	if authHeader == "" {
 		authHeader = request.Headers["authorization"] // case-insensitive fallback
 	}
-	
+
 	userId, err := extractUserFromToken(authHeader)
 	if err != nil {
 		log.Printf("Authentication failed: %v", err)
@@ -189,21 +202,33 @@ func handler(ctx context.Context, request events.APIGatewayProxyRequest) (events
 			StatusCode: 401,
 			Headers: map[string]string{
 				"Access-Control-Allow-Origin": "*",
-				"Content-Type": "application/json",
+				"Content-Type":                "application/json",
 			},
 			Body: `{"error": "Authentication required"}`,
 		}, nil
 	}
-	
+
 	var req IngestRequest
 	if err := json.Unmarshal([]byte(request.Body), &req); err != nil {
 		return events.APIGatewayProxyResponse{
 			StatusCode: 400,
 			Headers: map[string]string{
 				"Access-Control-Allow-Origin": "*",
-				"Content-Type": "application/json",
+				"Content-Type":                "application/json",
 			},
 			Body: `{"error": "Invalid request body"}`,
+		}, nil
+	}
+	
+	// Validate document size to prevent memory issues
+	if len(req.Text) > MaxDocumentSize {
+		return events.APIGatewayProxyResponse{
+			StatusCode: 413,
+			Headers: map[string]string{
+				"Access-Control-Allow-Origin": "*",
+				"Content-Type":                "application/json",
+			},
+			Body: fmt.Sprintf(`{"error": "Document too large. Maximum size is %d MB"}`, MaxDocumentSize/(1024*1024)),
 		}, nil
 	}
 
@@ -215,7 +240,7 @@ func handler(ctx context.Context, request events.APIGatewayProxyRequest) (events
 			StatusCode: 500,
 			Headers: map[string]string{
 				"Access-Control-Allow-Origin": "*",
-				"Content-Type": "application/json",
+				"Content-Type":                "application/json",
 			},
 			Body: `{"error": "Failed to get API key"}`,
 		}, nil
@@ -229,7 +254,7 @@ func handler(ctx context.Context, request events.APIGatewayProxyRequest) (events
 			StatusCode: 500,
 			Headers: map[string]string{
 				"Access-Control-Allow-Origin": "*",
-				"Content-Type": "application/json",
+				"Content-Type":                "application/json",
 			},
 			Body: `{"error": "Database connection failed"}`,
 		}, nil
@@ -238,54 +263,96 @@ func handler(ctx context.Context, request events.APIGatewayProxyRequest) (events
 
 	// Chunk the text into ~500 token chunks
 	chunks := chunkText(req.Text, MaxTokensPerChunk)
-	
+
+	// Start transaction for atomic document ingestion
+	tx, err := conn.Begin()
+	if err != nil {
+		log.Printf("Failed to start transaction: %v", err)
+		return events.APIGatewayProxyResponse{
+			StatusCode: 500,
+			Headers: map[string]string{
+				"Access-Control-Allow-Origin": "*",
+				"Content-Type":                "application/json",
+			},
+			Body: `{"error": "Transaction failed"}`,
+		}, nil
+	}
+
+	successCount := 0
+
 	// Process each chunk
 	for i, chunkText := range chunks {
 		log.Printf("Processing chunk %d/%d for document: %s", i+1, len(chunks), req.DocumentName)
-		
+
+		// Add delay between API calls to prevent rate limiting
+		if i > 0 {
+			time.Sleep(time.Duration(APICallDelay) * time.Millisecond)
+		}
+
 		// Generate embedding
 		embeddingVector, err := generateEmbedding(ctx, chunkText, apiKey)
 		if err != nil {
 			log.Printf("Embedding generation failed for chunk %d: %v", i+1, err)
-			continue
+			tx.Rollback()
+			return events.APIGatewayProxyResponse{
+				StatusCode: 500,
+				Headers: map[string]string{
+					"Access-Control-Allow-Origin": "*",
+					"Content-Type":                "application/json",
+				},
+				Body: `{"error": "Embedding generation failed"}`,
+			}, nil
 		}
-		
-		// Convert embedding to PostgreSQL array format
-		embedStr := "["
-		for j, v := range embeddingVector {
-			if j > 0 {
-				embedStr += ","
-			}
-			embedStr += fmt.Sprintf("%f", v)
-		}
-		embedStr += "]"
-		
+
 		// Insert into aiknowledge table with document name and user_id
-		_, err = conn.Exec(
+		// Use native array parameter - no manual string construction
+		_, err = tx.Exec(
 			"INSERT INTO aiknowledge (content, embedding, document_name, user_id) VALUES ($1, $2, $3, $4)",
 			chunkText,
-			embedStr,
+			embeddingVector, // Pass array directly
 			req.DocumentName,
 			userId,
 		)
 		if err != nil {
 			log.Printf("Vector storage failed for chunk %d: %v", i+1, err)
-			continue
+			tx.Rollback()
+			return events.APIGatewayProxyResponse{
+				StatusCode: 500,
+				Headers: map[string]string{
+					"Access-Control-Allow-Origin": "*",
+					"Content-Type":                "application/json",
+				},
+				Body: `{"error": "Database insert failed"}`,
+			}, nil
 		}
+		successCount++
+	}
+
+	// Commit transaction - all chunks succeeded
+	if err := tx.Commit(); err != nil {
+		log.Printf("Transaction commit failed: %v", err)
+		return events.APIGatewayProxyResponse{
+			StatusCode: 500,
+			Headers: map[string]string{
+				"Access-Control-Allow-Origin": "*",
+				"Content-Type":                "application/json",
+			},
+			Body: `{"error": "Transaction commit failed"}`,
+		}, nil
 	}
 
 	response := IngestResponse{
 		Message: fmt.Sprintf("Document '%s' ingested successfully", req.DocumentName),
-		Chunks:  len(chunks),
+		Chunks:  successCount,
 	}
-	
+
 	responseBody, _ := json.Marshal(response)
-	
+
 	return events.APIGatewayProxyResponse{
 		StatusCode: 200,
 		Headers: map[string]string{
 			"Access-Control-Allow-Origin": "*",
-			"Content-Type": "application/json",
+			"Content-Type":                "application/json",
 		},
 		Body: string(responseBody),
 	}, nil

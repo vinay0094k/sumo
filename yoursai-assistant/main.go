@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
@@ -21,6 +22,11 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	"github.com/google/uuid"
 	_ "github.com/lib/pq"
+)
+
+var (
+	dbPool *sql.DB
+	dbOnce sync.Once
 )
 
 type Request struct {
@@ -112,9 +118,12 @@ func getChatHistory(ctx context.Context, userId, sessionId string) ([]string, er
 
 	history := []string{}
 	for _, item := range out.Items {
-		history = append(history,
-			"User: "+item["userMessage"].(*types.AttributeValueMemberS).Value+
-				"\nAI: "+item["aiReply"].(*types.AttributeValueMemberS).Value)
+		userMsg, userOk := item["userMessage"].(*types.AttributeValueMemberS)
+		aiMsg, aiOk := item["aiReply"].(*types.AttributeValueMemberS)
+		if userOk && aiOk {
+			history = append(history,
+				"User: "+userMsg.Value+"\nAI: "+aiMsg.Value)
+		}
 	}
 	return history, nil
 }
@@ -131,7 +140,7 @@ func saveChat(ctx context.Context, userId, sessionId, userMsg, aiMsg string) err
 			"session_id":  &types.AttributeValueMemberS{Value: sessionId},
 			"timestamp":   &types.AttributeValueMemberS{Value: time.Now().Format(time.RFC3339)},
 			"userMessage": &types.AttributeValueMemberS{Value: userMsg},
-			"aiMessage":   &types.AttributeValueMemberS{Value: aiMsg},
+			"aiReply":     &types.AttributeValueMemberS{Value: aiMsg},
 		},
 	})
 	if err != nil {
@@ -186,45 +195,37 @@ func getParameter(ctx context.Context, name string) (string, error) {
 	return *out.Parameter.Value, nil
 }
 
-func connectDB(ctx context.Context) (*sql.DB, error) {
-	host, err := getParameter(ctx, DBHostPath)
-	if err != nil {
-		return nil, err
-	}
-	
-	username, err := getParameter(ctx, DBUsernamePath)
-	if err != nil {
-		return nil, err
-	}
-	
-	password, err := getParameter(ctx, DBPasswordPath)
-	if err != nil {
-		return nil, err
-	}
-	
-	database, err := getParameter(ctx, DBDatabasePath)
-	if err != nil {
-		return nil, err
-	}
-	
-	port, err := getParameter(ctx, DBPortPath)
-	if err != nil {
-		return nil, err
-	}
+func getDBPool(ctx context.Context) (*sql.DB, error) {
+	var err error
+	dbOnce.Do(func() {
+		host, e1 := getParameter(ctx, DBHostPath)
+		username, e2 := getParameter(ctx, DBUsernamePath)
+		password, e3 := getParameter(ctx, DBPasswordPath)
+		database, e4 := getParameter(ctx, DBDatabasePath)
+		port, e5 := getParameter(ctx, DBPortPath)
+		
+		if e1 != nil || e2 != nil || e3 != nil || e4 != nil || e5 != nil {
+			err = fmt.Errorf("failed to get DB parameters")
+			return
+		}
 
-	connStr := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=require",
-		host, port, username, password, database)
+		connStr := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=require",
+			host, port, username, password, database)
+
+		dbPool, err = sql.Open("postgres", connStr)
+		if err != nil {
+			return
+		}
+
+		// Configure connection pool
+		dbPool.SetMaxOpenConns(MaxOpenConns)
+		dbPool.SetMaxIdleConns(MaxIdleConns)
+		dbPool.SetConnMaxLifetime(time.Duration(ConnMaxLifetime) * time.Minute)
+		
+		err = dbPool.Ping()
+	})
 	
-	db, err := sql.Open("postgres", connStr)
-	if err != nil {
-		return nil, err
-	}
-	
-	if err = db.Ping(); err != nil {
-		return nil, err
-	}
-	
-	return db, nil
+	return dbPool, err
 }
 
 func generateEmbedding(ctx context.Context, text string, apiKey string) ([]float64, error) {
@@ -238,7 +239,7 @@ func generateEmbedding(ctx context.Context, text string, apiKey string) ([]float
 	}
 
 	body, _ := json.Marshal(payload)
-	req, _ := http.NewRequest("POST", EmbeddingAPIURL+"?key="+apiKey, bytes.NewBuffer(body))
+	req, _ := http.NewRequestWithContext(ctx, "POST", EmbeddingAPIURL+"?key="+apiKey, bytes.NewBuffer(body))
 	req.Header.Set("Content-Type", "application/json")
 
 	client := &http.Client{Timeout: 10 * time.Second}
@@ -263,18 +264,9 @@ func generateEmbedding(ctx context.Context, text string, apiKey string) ([]float
 }
 
 func vectorSearch(ctx context.Context, db *sql.DB, embedding []float64, userId string) ([]string, error) {
-	// Convert embedding to PostgreSQL array format
-	embedStr := "["
-	for i, v := range embedding {
-		if i > 0 {
-			embedStr += ","
-		}
-		embedStr += fmt.Sprintf("%f", v)
-	}
-	embedStr += "]"
-
+	// Use PostgreSQL array parameter directly - no manual string construction
 	query := `SELECT content, document_name FROM aiknowledge WHERE user_id = $2 ORDER BY embedding <-> $1 LIMIT 3`
-	rows, err := db.Query(query, embedStr, userId)
+	rows, err := db.Query(query, embedding, userId)
 	if err != nil {
 		return nil, err
 	}
@@ -412,13 +404,11 @@ func handler(ctx context.Context, request events.APIGatewayProxyRequest) (events
 	}
 
 	// Perform vector search for relevant knowledge (only for substantial queries)
-	db, err := connectDB(ctx)
+	db, err := getDBPool(ctx)
 	var vectorContext string
 	useRag := len(req.Message) > 30
 	
 	if err == nil && useRag {
-		defer db.Close()
-		
 		// Add delay before API call
 		time.Sleep(time.Duration(APICallDelay) * time.Millisecond)
 		
@@ -471,7 +461,7 @@ func handler(ctx context.Context, request events.APIGatewayProxyRequest) (events
 	// Use retry logic for rate limiting
 	resp, err := retryWithBackoff(func() (*http.Response, error) {
 		// Create fresh request each time to avoid body consumption issues
-		httpReq, _ := http.NewRequest("POST", GeminiAPIURL+"?key="+apiKey, bytes.NewBuffer(body))
+		httpReq, _ := http.NewRequestWithContext(ctx, "POST", GeminiAPIURL+"?key="+apiKey, bytes.NewBuffer(body))
 		httpReq.Header.Set("Content-Type", "application/json")
 		return client.Do(httpReq)
 	}, 3)
@@ -536,10 +526,43 @@ func handler(ctx context.Context, request events.APIGatewayProxyRequest) (events
 		}, nil
 	}
 
-	candidate := candidates[0].(map[string]interface{})
-	content := candidate["content"].(map[string]interface{})
-	parts := content["parts"].([]interface{})
-	reply := parts[0].(map[string]interface{})["text"].(string)
+	candidate, candidateOk := candidates[0].(map[string]interface{})
+	if !candidateOk {
+		return events.APIGatewayProxyResponse{
+			StatusCode: 500,
+			Headers: map[string]string{
+				"Access-Control-Allow-Origin": "*",
+				"Content-Type": "application/json",
+			},
+			Body: `{"error": "Invalid AI response format"}`,
+		}, nil
+	}
+	
+	content, contentOk := candidate["content"].(map[string]interface{})
+	parts, partsOk := content["parts"].([]interface{})
+	if !contentOk || !partsOk || len(parts) == 0 {
+		return events.APIGatewayProxyResponse{
+			StatusCode: 500,
+			Headers: map[string]string{
+				"Access-Control-Allow-Origin": "*",
+				"Content-Type": "application/json",
+			},
+			Body: `{"error": "Invalid AI response format"}`,
+		}, nil
+	}
+	
+	partMap, partOk := parts[0].(map[string]interface{})
+	reply, replyOk := partMap["text"].(string)
+	if !partOk || !replyOk {
+		return events.APIGatewayProxyResponse{
+			StatusCode: 500,
+			Headers: map[string]string{
+				"Access-Control-Allow-Origin": "*",
+				"Content-Type": "application/json",
+			},
+			Body: `{"error": "Invalid AI response format"}`,
+		}, nil
+	}
 
 	// Check if response was truncated due to token limit
 	finishReason, hasFinishReason := candidate["finishReason"].(string)
@@ -566,7 +589,7 @@ func handler(ctx context.Context, request events.APIGatewayProxyRequest) (events
 		}
 
 		continueBody, _ := json.Marshal(continuePayload)
-		continueReq, _ := http.NewRequest("POST", GeminiAPIURL+"?key="+apiKey, bytes.NewBuffer(continueBody))
+		continueReq, _ := http.NewRequestWithContext(ctx, "POST", GeminiAPIURL+"?key="+apiKey, bytes.NewBuffer(continueBody))
 		continueReq.Header.Set("Content-Type", "application/json")
 
 		continueResp, err := client.Do(continueReq)

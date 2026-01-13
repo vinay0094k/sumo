@@ -16,6 +16,11 @@ const (
 	RateLimitWindow    = 120 // seconds
 	MaxChatsPerSession = 30
 	APICallDelay       = 2000 // milliseconds between API calls
+	
+	// Database connection pool settings
+	MaxOpenConns    = 10
+	MaxIdleConns    = 5
+	ConnMaxLifetime = 5 // minutes
 
 	// Database Parameter Store paths
 	DBHostPath     = "/yoursai/db/host"
