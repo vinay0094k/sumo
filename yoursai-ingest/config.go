@@ -2,11 +2,15 @@ package main
 
 const (
 	// AI Models
-	EmbeddingModel  = "text-embedding-004"
-	EmbeddingAPIURL = "https://generativelanguage.googleapis.com/v1beta/models/" + EmbeddingModel + ":embedContent"
+	GeminiEmbeddingModel = "text-embedding-004"
+	OpenAIEmbeddingModel = "text-embedding-3-small"
+	
+	// API URLs
+	GeminiEmbeddingAPIURL = "https://generativelanguage.googleapis.com/v1beta/models/" + GeminiEmbeddingModel + ":embedContent"
+	OpenAIEmbeddingAPIURL = "https://api.openai.com/v1/embeddings"
 
 	// AWS Configuration
-	SSMKeyPath = "yoursAI_apiKey"
+	SSMKeyPath = "/yoursai/gemini/apiKey"
 	AWSRegion  = "us-east-1"
 
 	// Chunking Configuration

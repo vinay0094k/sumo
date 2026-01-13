@@ -1,12 +1,17 @@
 package main
 
 const (
-	// GeminiAPIURL       = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent"
-	AIModel            = "gemini-2.5-flash"
+	// AI Models
+	GeminiModel        = "gemini-2.5-flash-lite"
+	OpenAIModel        = "gpt-5-nano"
 	EmbeddingModel     = "text-embedding-004"
-	GeminiAPIURL       = "https://generativelanguage.googleapis.com/v1beta/models/" + AIModel + ":generateContent"
+	
+	// API URLs
+	GeminiAPIURL       = "https://generativelanguage.googleapis.com/v1beta/models/" + GeminiModel + ":generateContent"
 	EmbeddingAPIURL    = "https://generativelanguage.googleapis.com/v1beta/models/" + EmbeddingModel + ":embedContent"
-	SSMKeyPath         = "yoursAI_apiKey"
+	OpenAIAPIURL       = "https://api.openai.com/v1/chat/completions"
+	
+	SSMKeyPath         = "/yoursai/gemini/apiKey"
 	AWSRegion          = "us-east-1"
 	DynamoTableName    = "ChatHistory"
 	MaxMessageLength   = 3000
@@ -16,7 +21,7 @@ const (
 	RateLimitWindow    = 120 // seconds
 	MaxChatsPerSession = 30
 	APICallDelay       = 2000 // milliseconds between API calls
-	ContextExchanges   = 3    // number of recent conversation exchanges for RAG context
+	ContextExchanges   = 5    // number of recent conversation exchanges for RAG context
 
 	// Database connection pool settings
 	MaxOpenConns    = 10

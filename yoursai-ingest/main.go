@@ -60,6 +60,14 @@ type IngestResponse struct {
 	Chunks  int    `json:"chunks"`
 }
 
+func isGeminiAPI() bool {
+	return strings.Contains(SSMKeyPath, "gemini")
+}
+
+func isOpenAIAPI() bool {
+	return strings.Contains(SSMKeyPath, "openai")
+}
+
 func getParameter(ctx context.Context, name string) (string, error) {
 	cfg, _ := config.LoadDefaultConfig(ctx)
 	client := ssm.NewFromConfig(cfg)
@@ -141,17 +149,30 @@ func chunkText(text string, maxTokens int) []string {
 }
 
 func generateEmbedding(ctx context.Context, text string, apiKey string) ([]float64, error) {
-	payload := map[string]interface{}{
-		"model": EmbeddingModel,
-		"content": map[string]interface{}{
-			"parts": []map[string]string{
-				{"text": text},
+	var payload map[string]interface{}
+	var req *http.Request
+	
+	if isGeminiAPI() {
+		payload = map[string]interface{}{
+			"model": GeminiEmbeddingModel,
+			"content": map[string]interface{}{
+				"parts": []map[string]string{
+					{"text": text},
+				},
 			},
-		},
+		}
+		body, _ := json.Marshal(payload)
+		req, _ = http.NewRequestWithContext(ctx, "POST", GeminiEmbeddingAPIURL+"?key="+apiKey, bytes.NewBuffer(body))
+	} else if isOpenAIAPI() {
+		payload = map[string]interface{}{
+			"model": OpenAIEmbeddingModel,
+			"input": text,
+		}
+		body, _ := json.Marshal(payload)
+		req, _ = http.NewRequestWithContext(ctx, "POST", OpenAIEmbeddingAPIURL, bytes.NewBuffer(body))
+		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
-
-	body, _ := json.Marshal(payload)
-	req, _ := http.NewRequestWithContext(ctx, "POST", EmbeddingAPIURL+"?key="+apiKey, bytes.NewBuffer(body))
+	
 	req.Header.Set("Content-Type", "application/json")
 
 	client := &http.Client{Timeout: HTTPTimeout * time.Second}
@@ -166,22 +187,44 @@ func generateEmbedding(ctx context.Context, text string, apiKey string) ([]float
 		return nil, err
 	}
 
-	embeddingMap, embOk := result["embedding"].(map[string]interface{})
-	if !embOk {
-		return nil, fmt.Errorf("invalid embedding response format")
-	}
+	var embedVec []float64
+	if isGeminiAPI() {
+		// Parse Gemini response
+		embeddingMap, embOk := result["embedding"].(map[string]interface{})
+		if !embOk {
+			return nil, fmt.Errorf("invalid embedding response format")
+		}
 
-	values, valOk := embeddingMap["values"].([]interface{})
-	if !valOk {
-		return nil, fmt.Errorf("invalid embedding values format")
-	}
+		values, valOk := embeddingMap["values"].([]interface{})
+		if !valOk {
+			return nil, fmt.Errorf("invalid embedding values format")
+		}
 
-	embedVec := make([]float64, len(values))
-	for i, v := range values {
-		if floatVal, ok := v.(float64); ok {
-			embedVec[i] = floatVal
-		} else {
-			return nil, fmt.Errorf("invalid embedding value type at index %d", i)
+		embedVec = make([]float64, len(values))
+		for i, v := range values {
+			if floatVal, ok := v.(float64); ok {
+				embedVec[i] = floatVal
+			} else {
+				return nil, fmt.Errorf("invalid embedding value type at index %d", i)
+			}
+		}
+	} else if isOpenAIAPI() {
+		// Parse OpenAI response
+		data, dataOk := result["data"].([]interface{})
+		if !dataOk || len(data) == 0 {
+			return nil, fmt.Errorf("invalid OpenAI embedding response format")
+		}
+
+		embeddingData := data[0].(map[string]interface{})
+		values := embeddingData["embedding"].([]interface{})
+
+		embedVec = make([]float64, len(values))
+		for i, v := range values {
+			if floatVal, ok := v.(float64); ok {
+				embedVec[i] = floatVal
+			} else {
+				return nil, fmt.Errorf("invalid embedding value type at index %d", i)
+			}
 		}
 	}
 

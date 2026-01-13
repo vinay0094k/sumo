@@ -104,7 +104,7 @@ func getChatHistory(ctx context.Context, userId, sessionId string) ([]string, er
 
 	out, err := db.Query(ctx, &dynamodb.QueryInput{
 		TableName:              aws.String("ChatHistory"),
-		KeyConditionExpression: aws.String("user_id = :uid AND session_id = :sid"),
+		KeyConditionExpression: aws.String("userId = :uid AND sessionId = :sid"),
 		ExpressionAttributeValues: map[string]types.AttributeValue{
 			":uid": &types.AttributeValueMemberS{Value: userId},
 			":sid": &types.AttributeValueMemberS{Value: sessionId},
@@ -136,11 +136,11 @@ func saveChat(ctx context.Context, userId, sessionId, userMsg, aiMsg string) err
 	_, err := db.PutItem(ctx, &dynamodb.PutItemInput{
 		TableName: aws.String("ChatHistory"),
 		Item: map[string]types.AttributeValue{
-			"user_id":     &types.AttributeValueMemberS{Value: userId},
-			"session_id":  &types.AttributeValueMemberS{Value: sessionId},
-			"timestamp":   &types.AttributeValueMemberS{Value: time.Now().Format(time.RFC3339)},
+			"userId":     &types.AttributeValueMemberS{Value: userId},
+			"sessionId":  &types.AttributeValueMemberS{Value: sessionId},
+			"timestamp":  &types.AttributeValueMemberS{Value: time.Now().Format(time.RFC3339)},
 			"userMessage": &types.AttributeValueMemberS{Value: userMsg},
-			"aiReply":     &types.AttributeValueMemberS{Value: aiMsg},
+			"aiReply":    &types.AttributeValueMemberS{Value: aiMsg},
 		},
 	})
 	if err != nil {
@@ -156,7 +156,7 @@ func cleanupOldChats(ctx context.Context, userId, sessionId string, db *dynamodb
 	// Get all chats for this user and session, ordered by timestamp
 	out, err := db.Query(ctx, &dynamodb.QueryInput{
 		TableName:              aws.String("ChatHistory"),
-		KeyConditionExpression: aws.String("user_id = :uid AND session_id = :sid"),
+		KeyConditionExpression: aws.String("userId = :uid AND sessionId = :sid"),
 		ExpressionAttributeValues: map[string]types.AttributeValue{
 			":uid": &types.AttributeValueMemberS{Value: userId},
 			":sid": &types.AttributeValueMemberS{Value: sessionId},
@@ -174,8 +174,8 @@ func cleanupOldChats(ctx context.Context, userId, sessionId string, db *dynamodb
 			db.DeleteItem(ctx, &dynamodb.DeleteItemInput{
 				TableName: aws.String("ChatHistory"),
 				Key: map[string]types.AttributeValue{
-					"user_id":    item["user_id"],
-					"session_id": item["session_id"],
+					"userId":    item["userId"],
+					"sessionId": item["sessionId"],
 				},
 			})
 		}
@@ -291,18 +291,26 @@ func vectorSearch(ctx context.Context, db *sql.DB, embedding []float64, userId s
 	return results, nil
 }
 
-func getGeminiKey(ctx context.Context) (string, error) {
+func getAPIKey(ctx context.Context) (string, error) {
 	cfg, _ := config.LoadDefaultConfig(ctx)
 	client := ssm.NewFromConfig(cfg)
 
 	out, err := client.GetParameter(ctx, &ssm.GetParameterInput{
-		Name:           aws.String("yoursAI_apiKey"),
+		Name:           aws.String(SSMKeyPath),
 		WithDecryption: aws.Bool(true),
 	})
 	if err != nil {
 		return "", err
 	}
 	return *out.Parameter.Value, nil
+}
+
+func isGeminiAPI() bool {
+	return strings.Contains(SSMKeyPath, "gemini")
+}
+
+func isOpenAIAPI() bool {
+	return strings.Contains(SSMKeyPath, "openai")
 }
 
 func handler(ctx context.Context, request events.APIGatewayProxyRequest) (events.APIGatewayProxyResponse, error) {
@@ -383,7 +391,7 @@ func handler(ctx context.Context, request events.APIGatewayProxyRequest) (events
 		}
 	}
 	
-	apiKey, err := getGeminiKey(ctx)
+	apiKey, err := getAPIKey(ctx)
 	if err != nil {
 		log.Printf("Error getting API key: %v", err)
 		return events.APIGatewayProxyResponse{
@@ -412,9 +420,24 @@ func handler(ctx context.Context, request events.APIGatewayProxyRequest) (events
 	if err == nil && useRag {
 		// Add delay before API call
 		time.Sleep(time.Duration(APICallDelay) * time.Millisecond)
-		
-		// Generate embedding for user question
-		embedding, err := generateEmbedding(ctx, req.Message, apiKey)
+
+		// Build contextual query using recent conversation history
+		contextualQuery := req.Message
+		if len(history) > 0 {
+			// Get last ContextExchanges exchanges for context
+			startIdx := 0
+			if len(history) > ContextExchanges {
+				startIdx = len(history) - ContextExchanges
+			}
+			recentContext := ""
+			for i := startIdx; i < len(history); i++ {
+				recentContext += history[i] + "\n"
+			}
+			contextualQuery = recentContext + "Current question: " + req.Message
+		}
+
+		// Generate embedding for contextual query
+		embedding, err := generateEmbedding(ctx, contextualQuery, apiKey)
 		if err == nil {
 			// Search for similar content
 			searchResults, err := vectorSearch(ctx, db, embedding, userId)
@@ -440,18 +463,30 @@ func handler(ctx context.Context, request events.APIGatewayProxyRequest) (events
 	}
 	finalPrompt += "\nUser: " + req.Message
 
-	payload := map[string]interface{}{
-		"contents": []map[string]interface{}{
-			{
-				"parts": []map[string]string{
-					{"text": finalPrompt},
+	var payload map[string]interface{}
+	if isGeminiAPI() {
+		payload = map[string]interface{}{
+			"contents": []map[string]interface{}{
+				{
+					"parts": []map[string]string{
+						{"text": finalPrompt},
+					},
 				},
 			},
-		},
-		"generationConfig": map[string]interface{}{
-			"maxOutputTokens": MaxOutputTokens,
-			"temperature":     Temperature,
-		},
+			"generationConfig": map[string]interface{}{
+				"maxOutputTokens": MaxOutputTokens,
+				"temperature":     Temperature,
+			},
+		}
+	} else if isOpenAIAPI() {
+		payload = map[string]interface{}{
+			"model": OpenAIModel,
+			"messages": []map[string]string{
+				{"role": "user", "content": finalPrompt},
+			},
+			"max_tokens":  MaxOutputTokens,
+			"temperature": Temperature,
+		}
 	}
 
 	body, _ := json.Marshal(payload)
@@ -461,8 +496,13 @@ func handler(ctx context.Context, request events.APIGatewayProxyRequest) (events
 	
 	// Use retry logic for rate limiting
 	resp, err := retryWithBackoff(func() (*http.Response, error) {
-		// Create fresh request each time to avoid body consumption issues
-		httpReq, _ := http.NewRequestWithContext(ctx, "POST", GeminiAPIURL+"?key="+apiKey, bytes.NewBuffer(body))
+		var httpReq *http.Request
+		if isGeminiAPI() {
+			httpReq, _ = http.NewRequestWithContext(ctx, "POST", GeminiAPIURL+"?key="+apiKey, bytes.NewBuffer(body))
+		} else if isOpenAIAPI() {
+			httpReq, _ = http.NewRequestWithContext(ctx, "POST", OpenAIAPIURL, bytes.NewBuffer(body))
+			httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+		}
 		httpReq.Header.Set("Content-Type", "application/json")
 		return client.Do(httpReq)
 	}, 3)
@@ -513,8 +553,11 @@ func handler(ctx context.Context, request events.APIGatewayProxyRequest) (events
 		}, nil
 	}
 
-	// Check if response has expected structure
-	candidates, ok := geminiResp["candidates"].([]interface{})
+	// Parse response based on API type
+	var reply string
+	if isGeminiAPI() {
+		// Check if response has expected structure
+		candidates, ok := geminiResp["candidates"].([]interface{})
 	if !ok || len(candidates) == 0 {
 		log.Printf("No candidates in response")
 		return events.APIGatewayProxyResponse{
@@ -552,22 +595,45 @@ func handler(ctx context.Context, request events.APIGatewayProxyRequest) (events
 		}, nil
 	}
 	
-	partMap, partOk := parts[0].(map[string]interface{})
-	reply, replyOk := partMap["text"].(string)
-	if !partOk || !replyOk {
-		return events.APIGatewayProxyResponse{
-			StatusCode: 500,
-			Headers: map[string]string{
-				"Access-Control-Allow-Origin": "*",
-				"Content-Type": "application/json",
-			},
-			Body: `{"error": "Invalid AI response format"}`,
-		}, nil
+		partMap, partOk := parts[0].(map[string]interface{})
+		replyText, replyOk := partMap["text"].(string)
+		if !partOk || !replyOk {
+			return events.APIGatewayProxyResponse{
+				StatusCode: 500,
+				Headers: map[string]string{
+					"Access-Control-Allow-Origin": "*",
+					"Content-Type": "application/json",
+				},
+				Body: `{"error": "Invalid AI response format"}`,
+			}, nil
+		}
+		reply = replyText
+	} else if isOpenAIAPI() {
+		// Parse OpenAI response
+		choices, ok := geminiResp["choices"].([]interface{})
+		if !ok || len(choices) == 0 {
+			return events.APIGatewayProxyResponse{
+				StatusCode: 200,
+				Headers: map[string]string{
+					"Access-Control-Allow-Origin": "*",
+					"Content-Type": "application/json",
+				},
+				Body: `{"reply": "No response from AI"}`,
+			}, nil
+		}
+
+		choice := choices[0].(map[string]interface{})
+		message := choice["message"].(map[string]interface{})
+		reply = message["content"].(string)
 	}
 
-	// Check if response was truncated due to token limit
-	finishReason, hasFinishReason := candidate["finishReason"].(string)
-	if hasFinishReason && finishReason == "MAX_TOKENS" {
+	// Check if response was truncated due to token limit (only for Gemini)
+	if isGeminiAPI() {
+		candidates, _ := geminiResp["candidates"].([]interface{})
+		if len(candidates) > 0 {
+			candidate := candidates[0].(map[string]interface{})
+			finishReason, hasFinishReason := candidate["finishReason"].(string)
+			if hasFinishReason && finishReason == "MAX_TOKENS" {
 		// Auto-continue the response
 		continuePrompt := SystemPrompt
 		if conversation != "" {
@@ -607,6 +673,8 @@ func handler(ctx context.Context, request events.APIGatewayProxyRequest) (events
 				}
 			}
 		}
+			}
+		}
 	}
 
 	// Save chat to DynamoDB
@@ -636,3 +704,4 @@ func handler(ctx context.Context, request events.APIGatewayProxyRequest) (events
 func main() {
 	lambda.Start(handler)
 }
+
