@@ -16,7 +16,8 @@ const (
 	RateLimitWindow    = 120 // seconds
 	MaxChatsPerSession = 30
 	APICallDelay       = 2000 // milliseconds between API calls
-	
+	ContextExchanges   = 3    // number of recent conversation exchanges for RAG context
+
 	// Database connection pool settings
 	MaxOpenConns    = 10
 	MaxIdleConns    = 5
