@@ -1,0 +1,198 @@
+frontend/
+├── src/
+│   ├── app/
+│   │   ├── layout.tsx
+│   │   ├── page.tsx
+│   │   ├── chat/
+│   │   │   └── page.tsx
+│   │   ├── ingest/
+│   │   │   └── page.tsx
+│   │   └── api/
+│   │       └── auth/
+│   │           └── route.ts
+│   │
+│   ├── components/
+│   │   ├── chat/
+│   │   │   ├── ChatBox.tsx
+│   │   │   ├── ChatHistory.tsx
+│   │   │   ├── MessageInput.tsx
+│   │   │   └── SessionSelector.tsx
+│   │   ├── ingest/
+│   │   │   ├── DocumentUpload.tsx
+│   │   │   ├── IngestionStatus.tsx
+│   │   │   └── DocumentList.tsx
+│   │   ├── auth/
+│   │   │   ├── LoginForm.tsx
+│   │   │   └── ProtectedRoute.tsx
+│   │   ├── layout/
+│   │   │   ├── Header.tsx
+│   │   │   ├── Sidebar.tsx
+│   │   │   └── Footer.tsx
+│   │   └── ui/
+│   │       └── (shadcn components - Button, Input, Card, etc)
+│   │
+│   ├── lib/
+│   │   ├── api.ts
+│   │   ├── auth.ts
+│   │   ├── types.ts
+│   │   └── utils.ts
+│   │
+│   ├── hooks/
+│   │   ├── useChat.ts
+│   │   ├── useAuth.ts
+│   │   └── useSession.ts
+│   │
+│   ├── context/
+│   │   ├── AuthContext.tsx
+│   │   └── ChatContext.tsx
+│   │
+│   ├── styles/
+│   │   └── globals.css
+│   │
+│   └── env.ts
+│
+├── public/
+│   └── (static assets)
+│
+├── .env.local
+├── next.config.js
+├── tailwind.config.ts
+├── tsconfig.json
+└── package.json
+
+
+Building a chat application similar to ChatGPT/Gemini, you should focus on:
+#########################################################################################################################################
+
+Plan: Creating Next.js Frontend File Structure with shadcn
+
+1. Initial Project Setup
+#Create a nextjs project folder named "frontend"
+Create a new Next.js project using 
+npx create-next-app@latest frontend --typescript --tailwind --eslint --app --src-dir --import-alias "@/*" --no-git 
+
+cd to "frontend" directory
+Install shadcn-ui using--> npx shadcn@latest init
+Install axios for HTTP client--> npm install axios 
+
+HTTP Client: Fetch API or Axios (both are fine)
+Streaming: Server-Sent Events (SSE) for AI response streaming
+State Management: React Query or custom hooks for chat history/documents
+Real-time: WebSockets only if needed for live collaboration
+
+# Install AWS Cognito SDK (if using AWS cognito)
+npm install amazon-cognito-identity-js (using tool: shell)
+#########################################################################################################################################
+
+2. Create Directory Structure
+
+Create folders in this order:
+src/app/chat - for chat page
+src/app/ingest - for document ingestion page
+src/app/api/auth - for authentication routes
+src/components/chat - chat-related components
+src/components/ingest - ingest-related components
+src/components/auth - authentication components
+src/components/layout - layout components
+src/components/ui - shadcn UI components (auto-generated)
+src/lib - utility and helper functions
+src/hooks - custom React hooks
+src/context - React context providers
+src/styles - CSS files
+
+src/
+├── app/
+│   ├── chat/
+│   ├── ingest/
+│   └── api/
+│       └── auth/
+├── components/
+│   ├── chat/
+│   ├── ingest/
+│   ├── auth/
+│   ├── layout/
+│   └── ui/
+├── lib/
+├── hooks/
+├── context/
+└── styles/
+#########################################################################################################################################
+3. Add shadcn UI Components
+
+Run npx shadcn-ui@latest add button for Button component
+Run npx shadcn-ui@latest add input for Input component
+Run npx shadcn-ui@latest add card for Card component
+Run npx shadcn-ui@latest add textarea for Textarea
+Run npx shadcn-ui@latest add dialog for Modal dialogs
+Run npx shadcn-ui@latest add tabs for Tabs component
+Run npx shadcn-ui@latest add scroll-area for scrollable areas
+Run npx shadcn-ui@latest add alert for alerts
+Run npx shadcn-ui@latest add loader for loading states
+
+-->npx shadcn@latest add button input card textarea dialog tabs scroll-area alert --yes
+#########################################################################################################################################
+
+4. Create Core Configuration Files
+
+Create src/lib/types.ts - TypeScript interfaces for API responses and request bodies
+Create src/lib/api.ts - API client functions for calling Lambda endpoints
+Create src/lib/auth.ts - Bolt Database authentication helper functions
+Create src/lib/utils.ts - General utility functions
+Create src/env.ts - Environment variables configuration
+#########################################################################################################################################
+
+5. Create Context and Hooks
+
+Create src/context/AuthContext.tsx - Authentication state provider
+Create src/context/ChatContext.tsx - Chat session and history state provider
+Create src/hooks/useAuth.ts - Custom hook for authentication logic
+Create src/hooks/useChat.ts - Custom hook for chat operations
+Create src/hooks/useSession.ts - Custom hook for session management
+#########################################################################################################################################
+
+6. Create Layout Components
+
+Create src/components/layout/Header.tsx - Top navigation bar with user menu
+Create src/components/layout/Sidebar.tsx - Navigation sidebar with links
+Create src/components/layout/Footer.tsx - Footer with info/links
+Create src/app/layout.tsx - Root layout wrapping all pages
+#########################################################################################################################################
+
+7. Create Authentication Components
+
+Create src/components/auth/LoginForm.tsx - Bolt Database login form
+Create src/components/auth/ProtectedRoute.tsx - Wrapper for protected pages
+Create src/app/api/auth/route.ts - Backend auth endpoints
+#########################################################################################################################################
+
+8. Create Chat Feature Components
+
+Create src/components/chat/MessageInput.tsx - Input box for sending messages
+Create src/components/chat/ChatBox.tsx - Main chat display area
+Create src/components/chat/ChatHistory.tsx - List of messages
+Create src/components/chat/SessionSelector.tsx - Dropdown/list to select chat sessions
+Create src/app/chat/page.tsx - Chat page layout
+#########################################################################################################################################
+
+9. Create Document Ingestion Components
+
+Create src/components/ingest/DocumentUpload.tsx - File upload interface
+Create src/components/ingest/IngestionStatus.tsx - Upload progress/status display
+Create src/components/ingest/DocumentList.tsx - List of uploaded documents
+Create src/app/ingest/page.tsx - Document ingest page layout
+#########################################################################################################################################
+
+10. Create Pages
+
+Create src/app/page.tsx - Landing/home page
+Update src/app/layout.tsx - Global layout with providers
+Create .env.local - Environment variables file
+#########################################################################################################################################
+
+11. Configure Build Files
+
+Verify tsconfig.json has path aliases configured
+Update next.config.js for API proxy settings
+Update tailwind.config.ts for custom theme colors
+Ensure package.json has correct scripts and dependencies
+#########################################################################################################################################
